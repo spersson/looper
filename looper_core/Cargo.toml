@@ -1,0 +1,9 @@
+[package]
+name = "looper_core"
+version = "0.1.0"
+authors = ["Simon Persson <simon.persson@mykolab.com>"]
+
+[dependencies]
+log = "*"
+mio = "*"
+slab = "*"
