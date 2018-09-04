@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use mio::{net::TcpListener, net::TcpStream, Evented, Poll, PollOpt, Ready, Token};
 use tungstenite::{server, Error as InnerSocketError, Message, WebSocket as InnerSocket};
 
-use looper_core::{EventQueue, IoHandler};
+use looper_core::{Core, IoHandler};
 
 pub trait WebSocketHandler<S> {
     fn acceptable(&mut self, _from_address: SocketAddr) -> bool {
@@ -50,14 +50,15 @@ impl<S, W, F> WebSocketServer<S, W, F> {
 
 impl<S, W, F> IoHandler<S> for WebSocketServer<S, W, F>
 where
-    F: Fn(Sender) -> W,
-    W: WebSocketHandler<S> + 'static,
+    S: 'static,
+    W: 'static + WebSocketHandler<S>,
+    F: 'static + Fn(Sender) -> W,
 {
     fn store_token(&mut self, token: Token) {
         self.token = Some(token);
     }
 
-    fn read_all(&mut self, queue: &mut EventQueue<S>, state: &mut S) {
+    fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
         loop {
             let (tcp_stream, address) = match self.tcp_listener.accept() {
                 Ok((t, a)) => (t, a),
@@ -66,7 +67,7 @@ where
                         error!("Error while trying to accept an incoming connection: {}", e);
                         match self.token {
                             Some(token) => {
-                                queue.remove_io_handler(token);
+                                core.remove_io_handler(token);
                             }
                             None => unreachable!(),
                         }
@@ -83,7 +84,7 @@ where
                 if let Some(message) = handler.welcome_message(state) {
                     inner_socket.write_message(message).unwrap();
                 }
-                queue.add_io_handler(Box::new(WebSocket {
+                core.add_io_handler(Box::new(WebSocket {
                     inner_socket,
                     handler,
                     token: None,
@@ -115,13 +116,14 @@ pub struct WebSocket<W> {
 
 impl<S, W> IoHandler<S> for WebSocket<W>
 where
-    W: WebSocketHandler<S>,
+    S: 'static,
+    W: 'static + WebSocketHandler<S>,
 {
     fn store_token(&mut self, token: Token) {
         self.token = Some(token);
     }
 
-    fn read_all(&mut self, queue: &mut EventQueue<S>, state: &mut S) {
+    fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
         loop {
             match self.inner_socket.read_message() {
                 Err(InnerSocketError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => return,
@@ -135,7 +137,7 @@ where
                     }
                     match self.token {
                         Some(token) => {
-                            queue.remove_io_handler(token);
+                            core.remove_io_handler(token);
                         }
                         None => unreachable!(),
                     }
@@ -150,10 +152,10 @@ where
         }
     }
 
-    fn write_all(&mut self, queue: &mut EventQueue<S>, _state: &mut S) {
+    fn write_all(&mut self, core: &mut Core<S>, _state: &mut S) {
         if let Err(e) = self.inner_socket.write_pending() {
             match e {
-                InnerSocketError::Io(ref e)if e.kind() == ErrorKind::WouldBlock => return,
+                InnerSocketError::Io(ref e) if e.kind() == ErrorKind::WouldBlock => return,
                 InnerSocketError::ConnectionClosed(_) => (),
                 _ => {
                     error!("Error while trying to read an incoming message: {}", e);
@@ -161,7 +163,7 @@ where
             }
             match self.token {
                 Some(token) => {
-                    queue.remove_io_handler(token);
+                    core.remove_io_handler(token);
                 }
                 None => unreachable!(),
             }
