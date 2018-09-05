@@ -73,6 +73,8 @@ impl<S> Core<S> {
                         Some(handler) => handler,
                         None => continue,
                     },
+                    // Possibly mio can return many events for the same token
+                    // and the handler been removed by a previous event.
                     None => continue,
                 };
 
@@ -83,10 +85,12 @@ impl<S> Core<S> {
                     handler.write_all(self, &mut state);
                 }
 
-                // if get_mut returns None then the handler must have removed itself from self.handlers
-                // so we just drop the handler itself at the end of scope (loop).
                 if let Some(option) = self.io_handlers.get_mut(event.token()) {
                     *option = Some(handler);
+                } else {
+                    // if get_mut returns None then the handler must have removed itself
+                    // so we just drop the handler itself at the end of scope (for loop).
+                    self.poll.deregister(&*handler).unwrap();
                 }
             }
         }
