@@ -36,7 +36,12 @@ pub struct WebSocketServer<S, W, F> {
     _marker: PhantomData<fn(S) -> W>,
 }
 
-impl<S, W, F> WebSocketServer<S, W, F> {
+impl<S, W, F> WebSocketServer<S, W, F>
+where
+    S: 'static,
+    W: 'static + WebSocketHandler<S>,
+    F: 'static + Fn(Sender) -> W,
+{
     pub fn new(
         socket_address: SocketAddr,
         factory: F,

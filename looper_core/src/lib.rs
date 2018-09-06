@@ -3,15 +3,25 @@ extern crate log;
 extern crate mio;
 extern crate stash;
 
-use std::any::Any;
-
 use mio::event::Evented as MioEvented;
 use mio::{Events as MioEvents, Poll, PollOpt, Ready, Token};
 use stash::Stash;
+use std::any::TypeId;
+use std::borrow::BorrowMut;
 
-pub trait IoHandler<S>: MioEvented + Any {
+pub trait IoHandler<S>: MioEvented + 'static {
     fn read_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
     fn write_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
+}
+
+impl<S: 'static> IoHandler<S> {
+    fn downcast_mut<T: IoHandler<S>>(&mut self) -> Option<&mut T> {
+        if TypeId::of::<T>() == TypeId::of::<Self>() {
+            Some(unsafe { &mut *(self as *mut Self as *mut T) })
+        } else {
+            None
+        }
+    }
 }
 
 pub struct Core<S> {
@@ -20,7 +30,7 @@ pub struct Core<S> {
     exit: bool,
 }
 
-impl<S> Core<S> {
+impl<S: 'static> Core<S> {
     pub fn new() -> Core<S> {
         Core {
             io_handlers: Stash::default(),
@@ -45,8 +55,12 @@ impl<S> Core<S> {
         self.io_handlers.put(Some(io_handler))
     }
 
-    pub fn get_mut(&mut self, token: Token) -> Option<&mut Box<IoHandler<S>>> {
-        self.io_handlers.get_mut(token).and_then(Option::as_mut)
+    pub fn get_mut<T: IoHandler<S>>(&mut self, token: Token) -> Option<&mut T> {
+        self.io_handlers
+            .get_mut(token)
+            .and_then(Option::as_mut)
+            .map(BorrowMut::borrow_mut)
+            .and_then(IoHandler::downcast_mut)
     }
 
     pub fn remove(&mut self, token: Token) {
