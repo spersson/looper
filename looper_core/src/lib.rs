@@ -12,6 +12,7 @@ use std::borrow::BorrowMut;
 pub trait IoHandler<S>: MioEvented + 'static {
     fn read_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
     fn write_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
+    fn remove_token(&mut self, _token: Token) {}
 }
 
 impl<S: 'static> IoHandler<S> {
@@ -28,6 +29,7 @@ pub struct Core<S> {
     io_handlers: Stash<Option<Box<IoHandler<S>>>, Token>,
     poll: Poll,
     exit: bool,
+    interest: Vec<(Token, Token)>,
 }
 
 impl<S: 'static> Core<S> {
@@ -36,6 +38,7 @@ impl<S: 'static> Core<S> {
             io_handlers: Stash::default(),
             poll: Poll::new().unwrap(),
             exit: false,
+            interest: Vec::new(),
         }
     }
 
@@ -55,6 +58,10 @@ impl<S: 'static> Core<S> {
         self.io_handlers.put(Some(io_handler))
     }
 
+    pub fn register_interest(&mut self, caller: Token, subject: Token) {
+        self.interest.push((caller, subject));
+    }
+
     pub fn get_mut<T: IoHandler<S>>(&mut self, token: Token) -> Option<&mut T> {
         self.io_handlers
             .get_mut(token)
@@ -66,6 +73,18 @@ impl<S: 'static> Core<S> {
     pub fn remove(&mut self, token: Token) {
         if let Some(Some(handler)) = self.io_handlers.take(token) {
             self.poll.deregister(&*handler).unwrap();
+        }
+        let mut i = 0;
+        while i < self.interest.len() {
+            let (caller, subject) = self.interest[i];
+            if subject == token {
+                if let Some(Some(handler)) = self.io_handlers.get_mut(caller) {
+                    handler.remove_token(subject);
+                }
+                self.interest.swap_remove(i);
+            } else {
+                i += 1;
+            }
         }
     }
 

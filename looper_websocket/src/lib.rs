@@ -33,6 +33,7 @@ pub struct WebSocketServer<S, W, F> {
     tcp_listener: TcpListener,
     factory: F,
     token: Token,
+    sockets: Vec<Token>,
     _marker: PhantomData<fn(S) -> W>,
 }
 
@@ -52,8 +53,17 @@ where
             tcp_listener,
             factory,
             token,
+            sockets: Vec::new(),
             _marker: PhantomData,
         })
+    }
+
+    pub fn broadcast(&self, core: &mut Core<S>, message: Message) {
+        for token in &self.sockets {
+            if let Some(socket) = core.get_mut::<WebSocket<W>>(*token) {
+                socket.inner_socket.write_message(message.clone()).unwrap();
+            }
+        }
     }
 }
 
@@ -84,14 +94,21 @@ where
                 if let Some(message) = handler.welcome_message(state) {
                     inner_socket.write_message(message).unwrap();
                 }
+                let token = core.next_token();
                 let io_handler = Box::new(WebSocket {
                     inner_socket,
                     handler,
-                    token: core.next_token(),
+                    token,
                 });
                 core.insert(io_handler);
+                core.register_interest(self.token, token);
+                self.sockets.push(token);
             }
         }
+    }
+
+    fn remove_token(&mut self, token: Token) {
+        self.sockets.retain(|t| *t != token);
     }
 }
 
