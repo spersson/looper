@@ -27,15 +27,15 @@ pub trait WebSocketHandler<S> {
     }
 }
 
-pub struct WebSocketServer<S, W, F> {
+pub struct WebSocketServer<S, F> {
     tcp_listener: TcpListener,
     factory: F,
     token: Token,
     sockets: Vec<Token>,
-    _marker: PhantomData<fn(S) -> W>,
+    _marker: PhantomData<S>,
 }
 
-impl<S, W, F> WebSocketServer<S, W, F>
+impl<S, W, F> WebSocketServer<S, F>
 where
     S: 'static,
     W: 'static + WebSocketHandler<S>,
@@ -45,7 +45,7 @@ where
         socket_address: SocketAddr,
         factory: F,
         token: Token,
-    ) -> Result<WebSocketServer<S, W, F>> {
+    ) -> Result<WebSocketServer<S, F>> {
         let tcp_listener = TcpListener::bind(&socket_address)?;
         Ok(WebSocketServer {
             tcp_listener,
@@ -65,7 +65,7 @@ where
     }
 }
 
-impl<S, W, F> IoHandler<S> for WebSocketServer<S, W, F>
+impl<S, W, F> IoHandler<S> for WebSocketServer<S, F>
 where
     S: 'static,
     W: 'static + WebSocketHandler<S>,
