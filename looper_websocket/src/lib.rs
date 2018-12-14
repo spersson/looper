@@ -9,9 +9,11 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 
 use mio::{net::TcpListener, net::TcpStream, Evented, Token};
-use tungstenite::{server, Error as InnerSocketError, Message, WebSocket as InnerSocket};
+use tungstenite::{server, Error as InnerSocketError, WebSocket as InnerSocket};
 
 use looper_core::{Core, IoHandler};
+
+pub use tungstenite::Message;
 
 pub trait WebSocketHandler<S> {
     fn acceptable(&mut self, _from_address: SocketAddr) -> bool {
