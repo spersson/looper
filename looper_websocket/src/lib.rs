@@ -8,7 +8,7 @@ use std::io::{ErrorKind, Result};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 
-use mio::{net::TcpListener, net::TcpStream, Evented, Poll, PollOpt, Ready, Token};
+use mio::{net::TcpListener, net::TcpStream, Evented, Token};
 use tungstenite::{server, Error as InnerSocketError, Message, WebSocket as InnerSocket};
 
 use looper_core::{Core, IoHandler};
@@ -27,8 +27,6 @@ pub trait WebSocketHandler<S> {
     }
 }
 
-pub struct Sender;
-
 pub struct WebSocketServer<S, W, F> {
     tcp_listener: TcpListener,
     factory: F,
@@ -41,7 +39,7 @@ impl<S, W, F> WebSocketServer<S, W, F>
 where
     S: 'static,
     W: 'static + WebSocketHandler<S>,
-    F: 'static + Fn(Sender) -> W,
+    F: 'static + Fn() -> W,
 {
     pub fn new(
         socket_address: SocketAddr,
@@ -71,8 +69,12 @@ impl<S, W, F> IoHandler<S> for WebSocketServer<S, W, F>
 where
     S: 'static,
     W: 'static + WebSocketHandler<S>,
-    F: 'static + Fn(Sender) -> W,
+    F: 'static + Fn() -> W,
 {
+    fn event_source(&self) -> &Evented {
+        &self.tcp_listener
+    }
+
     fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
         loop {
             let (tcp_stream, address) = match self.tcp_listener.accept() {
@@ -85,7 +87,7 @@ where
                     return;
                 }
             };
-            let mut handler = (self.factory)(Sender);
+            let mut handler = (self.factory)();
             if !handler.acceptable(address) {
                 continue; // just drop the tcp stream
             }
@@ -112,20 +114,6 @@ where
     }
 }
 
-impl<S, W, F> Evented for WebSocketServer<S, W, F> {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.tcp_listener.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.tcp_listener.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> Result<()> {
-        self.tcp_listener.deregister(poll)
-    }
-}
-
 pub struct WebSocket<W> {
     inner_socket: InnerSocket<TcpStream>,
     handler: W,
@@ -137,6 +125,10 @@ where
     S: 'static,
     W: 'static + WebSocketHandler<S>,
 {
+    fn event_source(&self) -> &Evented {
+        self.inner_socket.get_ref()
+    }
+
     fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
         loop {
             match self.inner_socket.read_message() {
@@ -172,23 +164,5 @@ where
             }
             core.remove(self.token);
         }
-    }
-}
-
-impl<W> Evented for WebSocket<W> {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.inner_socket
-            .get_ref()
-            .register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.inner_socket
-            .get_ref()
-            .reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> Result<()> {
-        self.inner_socket.get_ref().deregister(poll)
     }
 }

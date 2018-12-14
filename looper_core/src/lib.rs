@@ -3,13 +3,13 @@ extern crate log;
 extern crate mio;
 extern crate stash;
 
-use mio::event::Evented as MioEvented;
-use mio::{Events as MioEvents, Poll, PollOpt, Ready, Token};
+use mio::{Evented, Events, Poll, PollOpt, Ready, Token};
 use stash::Stash;
 use std::any::TypeId;
 use std::borrow::BorrowMut;
 
-pub trait IoHandler<S>: MioEvented + 'static {
+pub trait IoHandler<S>: 'static {
+    fn event_source(&self) -> &Evented;
     fn read_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
     fn write_all(&mut self, _core: &mut Core<S>, _state: &mut S) {}
     fn remove_token(&mut self, _token: Token) {}
@@ -49,7 +49,7 @@ impl<S: 'static> Core<S> {
     pub fn insert(&mut self, io_handler: Box<IoHandler<S>>) -> Token {
         self.poll
             .register(
-                &*io_handler,
+                io_handler.event_source(),
                 self.next_token(),
                 Ready::readable() | Ready::writable(),
                 PollOpt::edge(),
@@ -72,7 +72,7 @@ impl<S: 'static> Core<S> {
 
     pub fn remove(&mut self, token: Token) {
         if let Some(Some(handler)) = self.io_handlers.take(token) {
-            self.poll.deregister(&*handler).unwrap();
+            self.poll.deregister(handler.event_source()).unwrap();
         }
         let mut i = 0;
         while i < self.interest.len() {
@@ -93,7 +93,7 @@ impl<S: 'static> Core<S> {
     }
 
     pub fn run(&mut self, mut state: S) -> S {
-        let mut mio_events = MioEvents::with_capacity(32);
+        let mut mio_events = Events::with_capacity(32);
         loop {
             if self.exit {
                 break;
@@ -123,7 +123,7 @@ impl<S: 'static> Core<S> {
                 } else {
                     // if get_mut returns None then the handler must have removed itself
                     // so we just drop the handler itself at the end of scope (for loop).
-                    self.poll.deregister(&*handler).unwrap();
+                    self.poll.deregister(handler.event_source()).unwrap();
                 }
             }
         }
