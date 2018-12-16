@@ -4,27 +4,23 @@ extern crate log;
 extern crate mio;
 extern crate tungstenite;
 
+use looper_core::{Core, IoHandler};
+use mio::{net::TcpListener, net::TcpStream, Evented, Token};
 use std::io::{ErrorKind, Result};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-
-use mio::{net::TcpListener, net::TcpStream, Evented, Token};
-use tungstenite::{server, Error as InnerSocketError, WebSocket as InnerSocket};
-
-use looper_core::{Core, IoHandler};
-
-pub use tungstenite::Message;
+use tungstenite::{server, Error as InnerSocketError, Message, WebSocket as InnerSocket};
 
 pub trait WebSocketHandler<S> {
     fn acceptable(&mut self, _from_address: SocketAddr) -> bool {
         true
     }
 
-    fn welcome_message(&mut self, _state: &mut S) -> Option<Message> {
+    fn welcome_message(&mut self, _state: &mut S) -> Option<String> {
         None
     }
 
-    fn handle_message(&mut self, _message: Message, _state: &mut S) -> Option<Message> {
+    fn handle_message(&mut self, _message: String, _state: &mut S) -> Option<String> {
         None
     }
 }
@@ -58,10 +54,10 @@ where
         })
     }
 
-    pub fn broadcast(&self, core: &mut Core<S>, message: Message) {
+    pub fn broadcast(&self, core: &mut Core<S>, message: String) {
         for token in &self.sockets {
             if let Some(socket) = core.get_mut::<WebSocket<W>>(*token) {
-                socket.inner_socket.write_message(message.clone()).unwrap();
+                socket.inner_socket.write_message(Message::Text(message.clone())).unwrap();
             }
         }
     }
@@ -91,23 +87,32 @@ where
             };
             let mut handler = (self.factory)();
             if !handler.acceptable(address) {
+                info!(
+                    "Connection from {} found unacceptable. Dropping it.",
+                    address
+                );
                 continue; // just drop the tcp stream
             }
-            //FIXME: should handle errors
-            if let Ok(mut inner_socket) = server::accept(tcp_stream) {
-                if let Some(message) = handler.welcome_message(state) {
-                    inner_socket.write_message(message).unwrap();
+            let mut inner_socket = match server::accept(tcp_stream) {
+                Ok(inner_socket) => inner_socket,
+                Err(err) => {
+                    error!("Failed to open a new websocket: {}", err);
+                    continue;
                 }
-                let token = core.next_token();
-                let io_handler = Box::new(WebSocket {
-                    inner_socket,
-                    handler,
-                    token,
-                });
-                core.insert(io_handler);
-                core.register_interest(self.token, token);
-                self.sockets.push(token);
+            };
+
+            if let Some(message) = handler.welcome_message(state) {
+                inner_socket.write_message(Message::Text(message)).unwrap();
             }
+            let token = core.next_token();
+            let io_handler = Box::new(WebSocket {
+                inner_socket,
+                handler,
+                token,
+            });
+            core.insert(io_handler);
+            core.register_interest(self.token, token);
+            self.sockets.push(token);
         }
     }
 
@@ -116,7 +121,7 @@ where
     }
 }
 
-pub struct WebSocket<W> {
+struct WebSocket<W> {
     inner_socket: InnerSocket<TcpStream>,
     handler: W,
     token: Token,
@@ -134,37 +139,56 @@ where
     fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
         loop {
             match self.inner_socket.read_message() {
-                Err(InnerSocketError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => return,
-                Err(InnerSocketError::Utf8) => continue,
-                Err(e) => {
-                    match e {
-                        InnerSocketError::ConnectionClosed(_) => (),
-                        _ => {
-                            error!("Error while trying to read an incoming message: {}", e);
-                        }
-                    }
+                Err(InnerSocketError::ConnectionClosed(_)) => {
+                    info!("Connection closed.");
                     core.remove(self.token);
                     return;
                 }
-                Ok(message) => {
-                    if let Some(reply) = self.handler.handle_message(message, state) {
-                        self.inner_socket.write_message(reply).unwrap();
+                Err(InnerSocketError::Io(err)) => {
+                    if err.kind() != ErrorKind::WouldBlock {
+                        error!("IO error while reading incoming message: {}", err);
+                        core.remove(self.token);
                     }
+                    return;
+                }
+                Err(err) => {
+                    error!(
+                        "Non-fatal error while trying to read an incoming message: {}",
+                        err
+                    );
+                }
+                Ok(Message::Text(message)) => {
+                    if let Some(reply) = self.handler.handle_message(message, state) {
+                        self.inner_socket
+                            .write_message(Message::Text(reply))
+                            .unwrap();
+                    }
+                }
+                Ok(_other) => {
+                    warn!("Received and ignored message because it was not text-type.");
                 }
             }
         }
     }
 
     fn write_all(&mut self, core: &mut Core<S>, _state: &mut S) {
-        if let Err(e) = self.inner_socket.write_pending() {
-            match e {
-                InnerSocketError::Io(ref e) if e.kind() == ErrorKind::WouldBlock => return,
-                InnerSocketError::ConnectionClosed(_) => (),
-                _ => {
-                    error!("Error while trying to read an incoming message: {}", e);
+        match self.inner_socket.write_pending() {
+            Err(InnerSocketError::Io(err)) => {
+                if err.kind() != ErrorKind::WouldBlock {
+                    error!("Error while trying to write outgoing message: {}", err);
+                    core.remove(self.token);
                 }
             }
-            core.remove(self.token);
+            Err(InnerSocketError::ConnectionClosed(_)) => {
+                info!("Connection closed.");
+                core.remove(self.token);
+            }
+            Err(err) => {
+                error!("Error while trying to write an outgoing message: {}", err);
+            }
+            Ok(()) => {
+                debug!("Successfully flushed pending messages to send.");
+            }
         }
     }
 }
