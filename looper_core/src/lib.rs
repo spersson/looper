@@ -40,22 +40,21 @@ impl Object {
     }
 }
 
-struct IoHandler {
-    readers: Vec<Box<Callback>>,
-    writers: Vec<Box<Callback>>,
+enum IoHandler {
+    Read(Box<Call>),
 }
 
-struct Handler<F, T> {
+struct Callback<F, T> {
     f: F,
     object_id: ObjectId,
     _marker: PhantomData<T>,
 }
 
-trait Callback {
+trait Call {
     fn make_call(&self, &mut Core);
 }
 
-impl<F, T> Callback for Handler<F, T>
+impl<F, T> Call for Callback<F, T>
 where
     F: Fn(&mut T, &mut Core),
     T: Object,
@@ -67,6 +66,7 @@ where
             if let Some(t) = Object::downcast_mut(a) {
                 (self.f)(t, core);
             }
+            //FIXME: re-insert the target
         }
     }
 }
@@ -90,60 +90,47 @@ impl Core {
         }
     }
 
+    pub fn next_object_id(&self) -> ObjectId {
+        self.objects.next_index()
+    }
+
+    pub fn add_object(&mut self, object: Box<Object>) -> ObjectId {
+        self.objects.put(Some(object))
+    }
+    pub fn take(&mut self, object_id: ObjectId) -> Option<Box<Object>> {
+        self.objects.get_mut(object_id).and_then(Option::take)
+    }
+    pub fn insert_object(&mut self, object_id: ObjectId, object: Box<Object>) {
+        self.objects
+            .get_mut(object_id)
+            .and_then(|o| o.replace(object));
+    }
     //add_interest<F, T>(token: Token, object_id: ObjectId, f: F)
     //    where F: FnMut(&mut T) {
     //        let handler = Handler{f, object_id, _marker: PhantomData{}};
     //
     //    }
 
-    //    pub fn next_token(&self) -> Token {
-    //        self.io_handlers.next_index()
-    //    }
-
-    pub fn get_token(&mut self) -> Token {
-        self.io_handlers.put(IoHandler {
-            readers: Vec::new(),
-            writers: Vec::new(),
-        })
-    }
-
-    pub fn register_reader<F, T>(&mut self, token: Token, object_id: ObjectId, f: F)
+    pub fn register_reader<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F) -> Token
     where
         F: 'static + Fn(&mut T, &mut Core),
         T: Object,
         Box<Object>: BorrowMut<T>,
     {
-        if let Some(io_handler) = self.io_handlers.get_mut(token) {
-            io_handler.readers.push(Box::new(Handler {
-                f,
-                object_id,
-                _marker: PhantomData,
-            }));
-        }
-    }
-
-    pub fn insert(&mut self, handle: &Evented) -> Token {
         let token = self.io_handlers.next_index();
         self.poll
-            .register(
-                handle,
-                token,
-                Ready::readable() | Ready::writable(),
-                PollOpt::edge(),
-            )
+            .register(e, token, Ready::readable(), PollOpt::edge())
             .unwrap();
-        self.io_handlers.put(IoHandler {
-            readers: Vec::new(),
-            writers: Vec::new(),
-        })
+        let callback = Callback {
+            f,
+            object_id,
+            _marker: PhantomData,
+        };
+        self.io_handlers.put(IoHandler::Read(Box::new(callback)))
     }
 
     pub fn register_interest(&mut self, caller: Token, subject: Token) {
         self.interest.push((caller, subject));
-    }
-
-    pub fn take(&mut self, object_id: ObjectId) -> Option<Box<Object>> {
-        self.objects.get_mut(object_id).and_then(Option::take)
     }
 
     //    pub fn remove(&mut self, token: Token) {
