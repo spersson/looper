@@ -10,19 +10,16 @@ use std::borrow::BorrowMut;
 use std::marker::PhantomData;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ObjectId(u16);
+pub struct ObjectId(usize);
 
 impl From<usize> for ObjectId {
     fn from(idx: usize) -> Self {
-        if idx > ::std::u16::MAX as usize {
-            panic!("index type overflowing!");
-        }
-        ObjectId(idx as u16)
+        ObjectId(idx)
     }
 }
 impl Into<usize> for ObjectId {
     fn into(self) -> usize {
-        self.0 as usize
+        self.0
     }
 }
 
@@ -51,6 +48,15 @@ struct Callback<F, T> {
     _marker: PhantomData<T>,
 }
 
+impl<F, T> Callback<F, T> {
+    fn new(f: F) -> Callback<F, T> {
+        Callback {
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
 trait Call {
     fn make_call(&self, &mut Object, &mut Core);
 }
@@ -59,7 +65,6 @@ impl<F, T> Call for Callback<F, T>
 where
     F: Fn(&mut T, &mut Core),
     T: Object,
-    Box<Object>: BorrowMut<T>,
 {
     fn make_call(&self, object: &mut Object, core: &mut Core) {
         if let Some(t) = Object::downcast_mut(object) {
@@ -73,7 +78,6 @@ pub struct Core {
     objects: Stash<Option<Box<Object>>, ObjectId>,
     poll: Poll,
     exit: bool,
-    interest: Vec<(Token, Token)>,
 }
 
 impl Core {
@@ -83,7 +87,6 @@ impl Core {
             objects: Stash::default(),
             poll: Poll::new().unwrap(),
             exit: false,
-            interest: Vec::new(),
         }
     }
 
@@ -94,62 +97,55 @@ impl Core {
     pub fn add_object(&mut self, object: Box<Object>) -> ObjectId {
         self.objects.put(Some(object))
     }
-    pub fn take(&mut self, object_id: ObjectId) -> Option<Box<Object>> {
-        self.objects.get_mut(object_id).and_then(Option::take)
-    }
-    pub fn insert_object(&mut self, object_id: ObjectId, object: Box<Object>) {
-        self.objects
-            .get_mut(object_id)
-            .and_then(|o| o.replace(object));
-    }
-    //add_interest<F, T>(token: Token, object_id: ObjectId, f: F)
-    //    where F: FnMut(&mut T) {
-    //        let handler = Handler{f, object_id, _marker: PhantomData{}};
-    //
-    //    }
 
-    pub fn register_reader<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F) -> Token
+    pub fn remove_object(&mut self, object_id: ObjectId) -> Option<Box<Object>> {
+        self.objects.take(object_id).unwrap_or(None)
+    }
+
+    pub fn register_reader<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
         T: Object,
-        Box<Object>: BorrowMut<T>,
     {
+        self.internal_register(
+            e,
+            Ready::readable(),
+            object_id,
+            Some(Box::new(Callback::new(f))),
+            None,
+        );
+    }
+
+    pub fn register_writer<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F)
+    where
+        F: 'static + Fn(&mut T, &mut Core),
+        T: Object,
+    {
+        self.internal_register(
+            e,
+            Ready::writable(),
+            object_id,
+            None,
+            Some(Box::new(Callback::new(f))),
+        );
+    }
+
+    fn internal_register(
+        &mut self,
+        e: &Evented,
+        r: Ready,
+        object_id: ObjectId,
+        read_fn: Option<Box<Call>>,
+        write_fn: Option<Box<Call>>,
+    ) {
         let token = self.io_handlers.next_index();
-        self.poll
-            .register(e, token, Ready::readable(), PollOpt::edge())
-            .unwrap();
-        let callback = Callback {
-            f,
-            _marker: PhantomData,
-        };
+        self.poll.register(e, token, r, PollOpt::edge()).unwrap();
         self.io_handlers.put(Some(IoHandler {
             object_id,
-            read_fn: Some(Box::new(callback)),
-            write_fn: None,
-        }))
+            read_fn,
+            write_fn,
+        }));
     }
-
-    pub fn register_interest(&mut self, caller: Token, subject: Token) {
-        self.interest.push((caller, subject));
-    }
-
-    //    pub fn remove(&mut self, token: Token) {
-    //        if let Some(Some(handler)) = self.io_handlers.take(token) {
-    //            self.poll.deregister(&*handler).unwrap();
-    //        }
-    //        let mut i = 0;
-    //        while i < self.interest.len() {
-    //            let (caller, subject) = self.interest[i];
-    //            if subject == token {
-    //                if let Some(Some(handler)) = self.io_handlers.get_mut(caller) {
-    //                    handler.remove_token(subject);
-    //                }
-    //                self.interest.swap_remove(i);
-    //            } else {
-    //                i += 1;
-    //            }
-    //        }
-    //    }
 
     pub fn exit(&mut self) {
         self.exit = true;
@@ -164,38 +160,49 @@ impl Core {
             trace!("About to sleep and wait for IO events.");
             self.poll.poll(&mut mio_events, None).unwrap();
             for event in &mio_events {
-                let io_handler = match self.io_handlers.get_mut(event.token()) {
-                    Some(ref mut option) => match option.take() {
-                        Some(handler) => handler,
-                        None => continue,
-                    },
+                let token = event.token();
+                let io_handler = match self.io_handlers.get_mut(token).and_then(Option::take) {
+                    Some(handler) => handler,
                     None => continue,
                 };
 
-                let mut box_object = match self.objects.get_mut(io_handler.object_id) {
-                    Some(ref mut option) => match option.take() {
-                        Some(object) => object,
-                        None => continue,
-                    },
-                    // Possibly mio can return many events for the same token
-                    // and the handler been removed by a previous event.
-                    None => continue,
+                let mut box_object = match self
+                    .objects
+                    .get_mut(io_handler.object_id)
+                    .and_then(Option::take)
+                {
+                    Some(object) => object,
+                    None => {
+                        // Possibly mio can return many events for the same token
+                        // and the object been removed by a previous event. Remove the io handler also.
+                        self.io_handlers.take(token);
+                        continue;
+                    }
                 };
-                match &io_handler.read_fn {
-                    Some(read_fn) if event.readiness().is_readable() => {
+                if let Some(read_fn) = &io_handler.read_fn {
+                    if event.readiness().is_readable() {
                         read_fn.make_call(box_object.borrow_mut(), self);
                     }
-                    Some(_) | None => (),
+                }
+                if let Some(write_fn) = &io_handler.write_fn {
+                    if event.readiness().is_writable() {
+                        write_fn.make_call(box_object.borrow_mut(), self);
+                    }
                 }
 
-                //                if let Some(option) = self.io_handlers.get_mut(event.token()) {
-                //                    *option = Some(handler);
-                //                } else {
-                //                    // if get_mut returns None then the handler must have removed itself
-                //                    // so we just drop the handler itself at the end of scope (for loop).
-                //                    self.poll.deregister(&*handler).unwrap();
+                if let Some(option) = self.objects.get_mut(io_handler.object_id) {
+                    *option = Some(box_object);
+                } else {
+                    // if get_mut returns None then the object must have removed itself from Core.
+                    // Just drop the object itself at the end of scope (for loop).
+                    // Take the chance to remove the io_handler straight away.
+                    self.io_handlers.take(token);
+                }
+
+                if let Some(option) = self.io_handlers.get_mut(token) {
+                    *option = Some(io_handler);
+                }
             }
-            //                        }
         }
     }
 }
