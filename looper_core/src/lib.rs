@@ -102,6 +102,14 @@ impl Core {
         self.objects.take(object_id).unwrap_or(None)
     }
 
+    pub fn get_mut<T: Object>(&mut self, object_id: ObjectId) -> Option<&mut T> {
+        self.objects
+            .get_mut(object_id)
+            .and_then(Option::as_mut)
+            .map(BorrowMut::borrow_mut)
+            .and_then(Object::downcast_mut)
+    }
+
     pub fn register_reader<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
@@ -127,6 +135,26 @@ impl Core {
             object_id,
             None,
             Some(Box::new(Callback::new(f))),
+        );
+    }
+
+    pub fn register_reader_writer<FR, FW, T>(
+        &mut self,
+        e: &Evented,
+        object_id: ObjectId,
+        f_read: FR,
+        f_write: FW,
+    ) where
+        FR: 'static + Fn(&mut T, &mut Core),
+        FW: 'static + Fn(&mut T, &mut Core),
+        T: Object,
+    {
+        self.internal_register(
+            e,
+            Ready::readable() | Ready::writable(),
+            object_id,
+            Some(Box::new(Callback::new(f_read))),
+            Some(Box::new(Callback::new(f_write))),
         );
     }
 

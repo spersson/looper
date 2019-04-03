@@ -4,191 +4,167 @@ extern crate log;
 extern crate mio;
 extern crate tungstenite;
 
+use looper_core::{Core, ObjectId};
+use mio::net::{TcpListener, TcpStream};
 use std::io::{ErrorKind, Result};
-use std::marker::PhantomData;
 use std::net::SocketAddr;
-
-use mio::{net::TcpListener, net::TcpStream, Evented, Poll, PollOpt, Ready, Token};
 use tungstenite::{server, Error as InnerSocketError, Message, WebSocket as InnerSocket};
 
-use looper_core::{Core, IoHandler};
-
-pub trait WebSocketHandler<S> {
+pub trait WebSocketHandler {
     fn acceptable(&mut self, _from_address: SocketAddr) -> bool {
         true
     }
 
-    fn welcome_message(&mut self, _state: &mut S) -> Option<Message> {
+    fn welcome_message(&mut self, _core: &mut Core) -> Option<String> {
         None
     }
 
-    fn handle_message(&mut self, _message: Message, _state: &mut S) -> Option<Message> {
+    fn handle_message(&mut self, _message: String, _core: &mut Core) -> Option<String> {
         None
     }
 }
 
-pub struct Sender;
-
-pub struct WebSocketServer<S, W, F> {
+pub struct WebSocketServer<F> {
     tcp_listener: TcpListener,
     factory: F,
-    token: Token,
-    sockets: Vec<Token>,
-    _marker: PhantomData<fn(S) -> W>,
+    object_id: ObjectId,
+    sockets: Vec<ObjectId>,
 }
 
-impl<S, W, F> WebSocketServer<S, W, F>
+impl<W, F> WebSocketServer<F>
 where
-    S: 'static,
-    W: 'static + WebSocketHandler<S>,
-    F: 'static + Fn(Sender) -> W,
+    W: 'static + WebSocketHandler,
+    F: 'static + Fn() -> W,
 {
-    pub fn new(
-        socket_address: SocketAddr,
-        factory: F,
-        token: Token,
-    ) -> Result<WebSocketServer<S, W, F>> {
+    pub fn new(socket_address: SocketAddr, factory: F, core: &mut Core) -> Result<ObjectId> {
         let tcp_listener = TcpListener::bind(&socket_address)?;
-        Ok(WebSocketServer {
+        let object_id = core.next_object_id();
+        core.register_reader(&tcp_listener, object_id, WebSocketServer::<F>::read_all);
+        let server = WebSocketServer {
             tcp_listener,
             factory,
-            token,
+            object_id,
             sockets: Vec::new(),
-            _marker: PhantomData,
-        })
+        };
+        core.add_object(Box::new(server));
+        Ok(object_id)
     }
 
-    pub fn broadcast(&self, core: &mut Core<S>, message: Message) {
-        for token in &self.sockets {
-            if let Some(socket) = core.get_mut::<WebSocket<W>>(*token) {
-                socket.inner_socket.write_message(message.clone()).unwrap();
+    pub fn broadcast(&self, core: &mut Core, message: String) {
+        for id in &self.sockets {
+            if let Some(socket) = core.get_mut::<WebSocket<W>>(*id) {
+                socket
+                    .inner_socket
+                    .write_message(Message::Text(message.clone()))
+                    .unwrap();
             }
         }
     }
-}
 
-impl<S, W, F> IoHandler<S> for WebSocketServer<S, W, F>
-where
-    S: 'static,
-    W: 'static + WebSocketHandler<S>,
-    F: 'static + Fn(Sender) -> W,
-{
-    fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
+    fn read_all(&mut self, core: &mut Core) {
         loop {
             let (tcp_stream, address) = match self.tcp_listener.accept() {
                 Ok((t, a)) => (t, a),
                 Err(ref e) => {
                     if e.kind() != ErrorKind::WouldBlock {
                         error!("Error while trying to accept an incoming connection: {}", e);
-                        core.remove(self.token);
+                        core.remove_object(self.object_id);
                     }
                     return;
                 }
             };
-            let mut handler = (self.factory)(Sender);
+            let mut handler = (self.factory)();
             if !handler.acceptable(address) {
+                info!(
+                    "Connection from {} found unacceptable. Dropping it.",
+                    address
+                );
                 continue; // just drop the tcp stream
             }
-            //FIXME: should handle errors
-            if let Ok(mut inner_socket) = server::accept(tcp_stream) {
-                if let Some(message) = handler.welcome_message(state) {
-                    inner_socket.write_message(message).unwrap();
+            let mut inner_socket = match server::accept(tcp_stream) {
+                Ok(inner_socket) => inner_socket,
+                Err(err) => {
+                    error!("Failed to open a new websocket: {}", err);
+                    continue;
                 }
-                let token = core.next_token();
-                let io_handler = Box::new(WebSocket {
-                    inner_socket,
-                    handler,
-                    token,
-                });
-                core.insert(io_handler);
-                core.register_interest(self.token, token);
-                self.sockets.push(token);
+            };
+            if let Some(message) = handler.welcome_message(core) {
+                inner_socket.write_message(Message::Text(message)).unwrap();
             }
+            let object_id = core.next_object_id();
+            core.register_reader_writer(
+                inner_socket.get_ref(),
+                object_id,
+                WebSocket::<W>::read_all,
+                WebSocket::<W>::write_all,
+            );
+            core.add_object(Box::new(WebSocket {
+                inner_socket,
+                handler,
+                object_id,
+            }));
+            self.sockets.push(object_id);
         }
     }
-
-    fn remove_token(&mut self, token: Token) {
-        self.sockets.retain(|t| *t != token);
-    }
 }
 
-impl<S, W, F> Evented for WebSocketServer<S, W, F> {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.tcp_listener.register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.tcp_listener.reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> Result<()> {
-        self.tcp_listener.deregister(poll)
-    }
-}
-
-pub struct WebSocket<W> {
+struct WebSocket<W> {
     inner_socket: InnerSocket<TcpStream>,
     handler: W,
-    token: Token,
+    object_id: ObjectId,
 }
 
-impl<S, W> IoHandler<S> for WebSocket<W>
+impl<W> WebSocket<W>
 where
-    S: 'static,
-    W: 'static + WebSocketHandler<S>,
+    W: 'static + WebSocketHandler,
 {
-    fn read_all(&mut self, core: &mut Core<S>, state: &mut S) {
+    fn read_all(&mut self, core: &mut Core) {
         loop {
             match self.inner_socket.read_message() {
-                Err(InnerSocketError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => return,
-                Err(InnerSocketError::Utf8) => continue,
-                Err(e) => {
-                    match e {
-                        InnerSocketError::ConnectionClosed(_) => (),
-                        _ => {
-                            error!("Error while trying to read an incoming message: {}", e);
-                        }
-                    }
-                    core.remove(self.token);
+                Err(InnerSocketError::ConnectionClosed(_)) => {
+                    info!("Connection closed.");
+                    core.remove_object(self.object_id);
                     return;
                 }
-                Ok(message) => {
-                    if let Some(reply) = self.handler.handle_message(message, state) {
-                        self.inner_socket.write_message(reply).unwrap();
+                Err(InnerSocketError::Io(err)) => {
+                    if err.kind() != ErrorKind::WouldBlock {
+                        error!("IO error while trying to read incoming message: {}", err);
+                        core.remove_object(self.object_id);
+                    }
+                    return;
+                }
+                Err(err) => {
+                    error!(
+                        "Non-fatal error while trying to read an incoming message: {}",
+                        err
+                    );
+                }
+                Ok(Message::Text(message)) => {
+                    if let Some(reply) = self.handler.handle_message(message, core) {
+                        self.inner_socket
+                            .write_message(Message::Text(reply))
+                            .unwrap();
                     }
                 }
+                Ok(_other) => warn!("Received and ignored message because it was not text-type."),
             }
         }
     }
 
-    fn write_all(&mut self, core: &mut Core<S>, _state: &mut S) {
-        if let Err(e) = self.inner_socket.write_pending() {
-            match e {
-                InnerSocketError::Io(ref e) if e.kind() == ErrorKind::WouldBlock => return,
-                InnerSocketError::ConnectionClosed(_) => (),
-                _ => {
-                    error!("Error while trying to read an incoming message: {}", e);
+    fn write_all(&mut self, core: &mut Core) {
+        match self.inner_socket.write_pending() {
+            Err(InnerSocketError::Io(err)) => {
+                if err.kind() != ErrorKind::WouldBlock {
+                    error!("Error while trying to write outgoing message: {}", err);
+                    core.remove_object(self.object_id);
                 }
             }
-            core.remove(self.token);
+            Err(InnerSocketError::ConnectionClosed(_)) => {
+                info!("Connection closed.");
+                core.remove_object(self.object_id);
+            }
+            Err(err) => error!("Error while trying to write an outgoing message: {}", err),
+            Ok(()) => debug!("Successfully flushed pending messages to send."),
         }
-    }
-}
-
-impl<W> Evented for WebSocket<W> {
-    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.inner_socket
-            .get_ref()
-            .register(poll, token, interest, opts)
-    }
-
-    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> Result<()> {
-        self.inner_socket
-            .get_ref()
-            .reregister(poll, token, interest, opts)
-    }
-
-    fn deregister(&self, poll: &Poll) -> Result<()> {
-        self.inner_socket.get_ref().deregister(poll)
     }
 }
