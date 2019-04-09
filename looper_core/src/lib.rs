@@ -1,8 +1,4 @@
-#[macro_use]
-extern crate log;
-extern crate mio;
-extern crate stash;
-
+use log::trace;
 use mio::{Evented, Events as MioEvents, Poll, PollOpt, Ready, Token};
 use stash::Stash;
 use std::any::TypeId;
@@ -58,7 +54,7 @@ impl<F, T> Callback<F, T> {
 }
 
 trait Call {
-    fn make_call(&self, &mut Object, &mut Core);
+    fn make_call(&self, _: &mut Object, _: &mut Core);
 }
 
 impl<F, T> Call for Callback<F, T>
