@@ -33,6 +33,10 @@ impl Object {
     }
 }
 
+trait Call {
+    fn make_call(&self, _: &mut Object, _: &mut Core);
+}
+
 struct IoHandler {
     object_id: ObjectId,
     read_fn: Option<Box<Call>>,
@@ -51,10 +55,6 @@ impl<F, T> Callback<F, T> {
             _marker: PhantomData,
         }
     }
-}
-
-trait Call {
-    fn make_call(&self, _: &mut Object, _: &mut Core);
 }
 
 impl<F, T> Call for Callback<F, T>
@@ -106,13 +106,13 @@ impl Core {
             .and_then(Object::downcast_mut)
     }
 
-    pub fn register_reader<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F)
+    pub fn register_reader<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
         T: Object,
     {
         self.internal_register(
-            e,
+            evented,
             Ready::readable(),
             object_id,
             Some(Box::new(Callback::new(f))),
@@ -120,13 +120,13 @@ impl Core {
         );
     }
 
-    pub fn register_writer<F, T>(&mut self, e: &Evented, object_id: ObjectId, f: F)
+    pub fn register_writer<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
         T: Object,
     {
         self.internal_register(
-            e,
+            evented,
             Ready::writable(),
             object_id,
             None,
@@ -136,7 +136,7 @@ impl Core {
 
     pub fn register_reader_writer<FR, FW, T>(
         &mut self,
-        e: &Evented,
+        evented: &Evented,
         object_id: ObjectId,
         f_read: FR,
         f_write: FW,
@@ -146,7 +146,7 @@ impl Core {
         T: Object,
     {
         self.internal_register(
-            e,
+            evented,
             Ready::readable() | Ready::writable(),
             object_id,
             Some(Box::new(Callback::new(f_read))),

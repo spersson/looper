@@ -6,6 +6,6 @@ license = "MIT/Apache-2.0"
 edition = "2018"
 
 [dependencies]
-log = "*"
-mio = "*"
+log = "0.4"
+mio = "0.6"
 stash = { git = "https://github.com/Stebalien/stash-rs" }
