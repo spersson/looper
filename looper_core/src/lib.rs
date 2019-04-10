@@ -1,9 +1,11 @@
 use log::trace;
 use mio::{Evented, Events as MioEvents, Poll, PollOpt, Ready, Token};
 use stash::Stash;
-use std::any::TypeId;
+use std::any::Any;
 use std::borrow::BorrowMut;
+use std::io;
 use std::marker::PhantomData;
+use std::process;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ObjectId(usize);
@@ -19,22 +21,8 @@ impl Into<usize> for ObjectId {
     }
 }
 
-pub trait Object: 'static {}
-
-impl<T: 'static> Object for T {}
-
-impl Object {
-    fn downcast_mut<T: Object>(&mut self) -> Option<&mut T> {
-        if TypeId::of::<T>() == TypeId::of::<Self>() {
-            Some(unsafe { &mut *(self as *mut Self as *mut T) })
-        } else {
-            None
-        }
-    }
-}
-
 trait Call {
-    fn make_call(&self, _: &mut Object, _: &mut Core);
+    fn make_call(&self, _: &mut Any, _: &mut Core);
 }
 
 struct IoHandler {
@@ -60,10 +48,10 @@ impl<F, T> Callback<F, T> {
 impl<F, T> Call for Callback<F, T>
 where
     F: Fn(&mut T, &mut Core),
-    T: Object,
+    T: Any,
 {
-    fn make_call(&self, object: &mut Object, core: &mut Core) {
-        if let Some(t) = Object::downcast_mut(object) {
+    fn make_call(&self, object: &mut Any, core: &mut Core) {
+        if let Some(t) = object.downcast_mut() {
             (self.f)(t, core);
         }
     }
@@ -71,45 +59,47 @@ where
 
 pub struct Core {
     io_handlers: Stash<Option<IoHandler>, Token>,
-    objects: Stash<Option<Box<Object>>, ObjectId>,
+    objects: Stash<Option<Box<Any>>, ObjectId>,
     poll: Poll,
     exit: bool,
 }
 
 impl Core {
     pub fn new() -> Core {
-        Core {
+        let mut core = Core {
             io_handlers: Stash::default(),
             objects: Stash::default(),
             poll: Poll::new().unwrap(),
             exit: false,
-        }
+        };
+        proc_imp::init_hook(&mut core);
+        core
     }
 
     pub fn next_object_id(&self) -> ObjectId {
         self.objects.next_index()
     }
 
-    pub fn add_object(&mut self, object: Box<Object>) -> ObjectId {
+    pub fn add_object(&mut self, object: Box<Any>) -> ObjectId {
         self.objects.put(Some(object))
     }
 
-    pub fn remove_object(&mut self, object_id: ObjectId) -> Option<Box<Object>> {
+    pub fn remove_object(&mut self, object_id: ObjectId) -> Option<Box<Any>> {
         self.objects.take(object_id).unwrap_or(None)
     }
 
-    pub fn get_mut<T: Object>(&mut self, object_id: ObjectId) -> Option<&mut T> {
+    pub fn get_mut<T: Any>(&mut self, object_id: ObjectId) -> Option<&mut T> {
         self.objects
             .get_mut(object_id)
             .and_then(Option::as_mut)
             .map(BorrowMut::borrow_mut)
-            .and_then(Object::downcast_mut)
+            .and_then(Any::downcast_mut)
     }
 
     pub fn register_reader<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
-        T: Object,
+        T: Any,
     {
         self.internal_register(
             evented,
@@ -123,7 +113,7 @@ impl Core {
     pub fn register_writer<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
-        T: Object,
+        T: Any,
     {
         self.internal_register(
             evented,
@@ -143,7 +133,7 @@ impl Core {
     ) where
         FR: 'static + Fn(&mut T, &mut Core),
         FW: 'static + Fn(&mut T, &mut Core),
-        T: Object,
+        T: Any,
     {
         self.internal_register(
             evented,
@@ -152,6 +142,71 @@ impl Core {
             Some(Box::new(Callback::new(f_read))),
             Some(Box::new(Callback::new(f_write))),
         );
+    }
+
+    pub fn register_reaper<F, T>(&mut self, child: &Child, object_id: ObjectId, f: F)
+    where
+        F: 'static + Fn(&mut T, &mut Core),
+        T: Any,
+    {
+        proc_imp::register_reaper(self, child, object_id, f);
+    }
+
+    pub fn run(&mut self) {
+        let mut mio_events = MioEvents::with_capacity(32);
+        loop {
+            if self.exit {
+                break;
+            }
+            trace!("About to sleep and wait for IO events.");
+            self.poll.poll(&mut mio_events, None).unwrap();
+            for event in &mio_events {
+                let token = event.token();
+                let io_handler = match self.io_handlers.get_mut(token).and_then(Option::take) {
+                    Some(handler) => handler,
+                    None => continue,
+                };
+                let obj_exists = self.call_on_object(io_handler.object_id, |object, core| {
+                    if let Some(read_fn) = &io_handler.read_fn {
+                        if event.readiness().is_readable() {
+                            read_fn.make_call(object, core);
+                        }
+                    }
+                    if let Some(write_fn) = &io_handler.write_fn {
+                        if event.readiness().is_writable() {
+                            write_fn.make_call(object, core);
+                        }
+                    }
+                });
+                if !obj_exists {
+                    self.io_handlers.take(token);
+                }
+                if let Some(option) = self.io_handlers.get_mut(token) {
+                    *option = Some(io_handler);
+                }
+            }
+        }
+    }
+
+    pub fn exit(&mut self) {
+        self.exit = true;
+    }
+
+    fn call_on_object<F>(&mut self, object_id: ObjectId, f: F) -> bool
+    where
+        F: Fn(&mut Any, &mut Core),
+    {
+        if let Some(mut box_object) = self.objects.get_mut(object_id).and_then(Option::take) {
+            f(box_object.borrow_mut(), self);
+            if let Some(option) = self.objects.get_mut(object_id) {
+                *option = Some(box_object);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
     }
 
     fn internal_register(
@@ -170,63 +225,35 @@ impl Core {
             write_fn,
         }));
     }
+}
 
-    pub fn exit(&mut self) {
-        self.exit = true;
+#[path = "process_unix.rs"]
+#[cfg(unix)]
+mod proc_imp;
+
+pub use proc_imp::{ChildStderr, ChildStdin, ChildStdout};
+
+pub struct Child {
+    child: process::Child,
+    pub stdin: Option<ChildStdin>,
+    pub stdout: Option<ChildStdout>,
+    pub stderr: Option<ChildStderr>,
+}
+
+impl Child {
+    pub fn new(cmd: &mut process::Command) -> io::Result<Child> {
+        proc_imp::new_child(cmd.spawn()?)
     }
 
-    pub fn run(&mut self) {
-        let mut mio_events = MioEvents::with_capacity(32);
-        loop {
-            if self.exit {
-                break;
-            }
-            trace!("About to sleep and wait for IO events.");
-            self.poll.poll(&mut mio_events, None).unwrap();
-            for event in &mio_events {
-                let token = event.token();
-                let io_handler = match self.io_handlers.get_mut(token).and_then(Option::take) {
-                    Some(handler) => handler,
-                    None => continue,
-                };
+    /// Returns the OS-assigned process identifier associated with this child.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
 
-                let mut box_object = match self
-                    .objects
-                    .get_mut(io_handler.object_id)
-                    .and_then(Option::take)
-                {
-                    Some(object) => object,
-                    None => {
-                        // Possibly mio can return many events for the same token
-                        // and the object been removed by a previous event. Remove the io handler also.
-                        self.io_handlers.take(token);
-                        continue;
-                    }
-                };
-                if let Some(read_fn) = &io_handler.read_fn {
-                    if event.readiness().is_readable() {
-                        read_fn.make_call(box_object.borrow_mut(), self);
-                    }
-                }
-                if let Some(write_fn) = &io_handler.write_fn {
-                    if event.readiness().is_writable() {
-                        write_fn.make_call(box_object.borrow_mut(), self);
-                    }
-                }
-
-                if let Some(option) = self.objects.get_mut(io_handler.object_id) {
-                    *option = Some(box_object);
-                } else {
-                    // if get_mut returns None then the object must have removed itself from Core.
-                    // Just drop the object itself at the end of scope (for loop).
-                    // Take the chance to remove the io_handler straight away.
-                    self.io_handlers.take(token);
-                }
-
-                if let Some(option) = self.io_handlers.get_mut(token) {
-                    *option = Some(io_handler);
-                }
-            }
-        }
+    /// Forces the child to exit.
+    ///
+    /// This is equivalent to sending a SIGKILL on unix platforms.
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.child.kill()
     }
 }
