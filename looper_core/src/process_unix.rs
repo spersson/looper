@@ -13,8 +13,8 @@ use std::process;
 
 pub fn init_hook(core: &mut Core) {
     let signals = Signals::new(&[signal_hook::SIGCHLD]).unwrap();
-    core.register_reader(&signals, core.next_object_id(), reap_all);
-    core.add_object(Box::new(ProcessHandler {
+    core.register_reader(&signals, core.next_id(), reap_all);
+    core.add(Box::new(ProcessHandler {
         signals,
         reapers: Vec::new(),
     }));

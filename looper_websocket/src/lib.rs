@@ -38,7 +38,7 @@ where
 {
     pub fn new(socket_address: SocketAddr, factory: F, core: &mut Core) -> Result<ObjectId> {
         let tcp_listener = TcpListener::bind(&socket_address)?;
-        let object_id = core.next_object_id();
+        let object_id = core.next_id();
         core.register_reader(&tcp_listener, object_id, WebSocketServer::<F>::read_all);
         let server = WebSocketServer {
             tcp_listener,
@@ -46,7 +46,7 @@ where
             object_id,
             sockets: Vec::new(),
         };
-        core.add_object(Box::new(server));
+        core.add(Box::new(server));
         Ok(object_id)
     }
 
@@ -68,7 +68,7 @@ where
                 Err(ref e) => {
                     if e.kind() != ErrorKind::WouldBlock {
                         error!("Error while trying to accept an incoming connection: {}", e);
-                        core.remove_object(self.object_id);
+                        core.remove(self.object_id);
                     }
                     return;
                 }
@@ -91,14 +91,14 @@ where
             if let Some(message) = handler.welcome_message(core) {
                 inner_socket.write_message(Message::Text(message)).unwrap();
             }
-            let object_id = core.next_object_id();
+            let object_id = core.next_id();
             core.register_reader_writer(
                 inner_socket.get_ref(),
                 object_id,
                 WebSocket::<W>::read_all,
                 WebSocket::<W>::write_all,
             );
-            core.add_object(Box::new(WebSocket {
+            core.add(Box::new(WebSocket {
                 inner_socket,
                 handler,
                 object_id,
@@ -123,13 +123,13 @@ where
             match self.inner_socket.read_message() {
                 Err(InnerSocketError::ConnectionClosed(_)) => {
                     info!("Connection closed.");
-                    core.remove_object(self.object_id);
+                    core.remove(self.object_id);
                     return;
                 }
                 Err(InnerSocketError::Io(err)) => {
                     if err.kind() != ErrorKind::WouldBlock {
                         error!("IO error while trying to read incoming message: {}", err);
-                        core.remove_object(self.object_id);
+                        core.remove(self.object_id);
                     }
                     return;
                 }
@@ -156,12 +156,12 @@ where
             Err(InnerSocketError::Io(err)) => {
                 if err.kind() != ErrorKind::WouldBlock {
                     error!("Error while trying to write outgoing message: {}", err);
-                    core.remove_object(self.object_id);
+                    core.remove(self.object_id);
                 }
             }
             Err(InnerSocketError::ConnectionClosed(_)) => {
                 info!("Connection closed.");
-                core.remove_object(self.object_id);
+                core.remove(self.object_id);
             }
             Err(err) => error!("Error while trying to write an outgoing message: {}", err),
             Ok(()) => debug!("Successfully flushed pending messages to send."),

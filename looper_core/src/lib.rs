@@ -76,15 +76,15 @@ impl Core {
         core
     }
 
-    pub fn next_object_id(&self) -> ObjectId {
+    pub fn next_id(&self) -> ObjectId {
         self.objects.next_index()
     }
 
-    pub fn add_object(&mut self, object: Box<Any>) -> ObjectId {
+    pub fn add(&mut self, object: Box<Any>) -> ObjectId {
         self.objects.put(Some(object))
     }
 
-    pub fn remove_object(&mut self, object_id: ObjectId) -> Option<Box<Any>> {
+    pub fn remove(&mut self, object_id: ObjectId) -> Option<Box<Any>> {
         self.objects.take(object_id).unwrap_or(None)
     }
 
