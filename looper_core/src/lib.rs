@@ -192,6 +192,20 @@ impl Core {
         self.exit = true;
     }
 
+    /// Starts running the given command.
+    ///
+    /// All three of stdin, stdout and stderr will be piped to/from this process.
+    pub fn spawn<C: BorrowMut<Command>>(&self, mut cmd: C) -> io::Result<Child> {
+        // this is a method on core which takes a self parameter just to ensure that
+        // a Core instance has been created first, needed for unix imp to register
+        // a signal handler.
+        let cmd = cmd.borrow_mut();
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        proc_imp::new_child(cmd.spawn()?)
+    }
+
     fn call_on_object<F>(&mut self, object_id: ObjectId, f: F) -> bool
     where
         F: Fn(&mut Any, &mut Core),
@@ -241,16 +255,6 @@ pub struct Child {
 }
 
 impl Child {
-    /// Starts running the given command.
-    ///
-    /// All three of stdin, stdout and stderr will be piped to/from this process.
-    pub fn new(cmd: &mut Command) -> io::Result<Child> {
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        proc_imp::new_child(cmd.spawn()?)
-    }
-
     /// Returns the OS-assigned process identifier associated with this child.
     pub fn id(&self) -> u32 {
         self.child.id()
