@@ -155,7 +155,7 @@ impl Core {
     pub fn run(&mut self) {
         let mut mio_events = MioEvents::with_capacity(32);
         loop {
-            if self.exit {
+            if self.exit || self.io_handlers.is_empty() {
                 break;
             }
             trace!("About to sleep and wait for IO events.");
