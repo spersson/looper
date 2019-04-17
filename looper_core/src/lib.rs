@@ -5,7 +5,7 @@ use std::any::Any;
 use std::borrow::BorrowMut;
 use std::io;
 use std::marker::PhantomData;
-use std::process;
+use std::process::{Child as ProcessChild, Command, Stdio};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ObjectId(usize);
@@ -231,17 +231,23 @@ impl Core {
 #[cfg(unix)]
 mod proc_imp;
 
-pub use proc_imp::{ChildStderr, ChildStdin, ChildStdout};
+pub use proc_imp::{Stderr, Stdin, Stdout};
 
 pub struct Child {
-    child: process::Child,
-    pub stdin: Option<ChildStdin>,
-    pub stdout: Option<ChildStdout>,
-    pub stderr: Option<ChildStderr>,
+    child: ProcessChild,
+    pub stdin: Stdin,
+    pub stdout: Stdout,
+    pub stderr: Stderr,
 }
 
 impl Child {
-    pub fn new(cmd: &mut process::Command) -> io::Result<Child> {
+    /// Starts running the given command.
+    ///
+    /// All three of stdin, stdout and stderr will be piped to/from this process.
+    pub fn new(cmd: &mut Command) -> io::Result<Child> {
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         proc_imp::new_child(cmd.spawn()?)
     }
 

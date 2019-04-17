@@ -138,14 +138,14 @@ impl<T: AsRawFd> Evented for Fd<T> {
     }
 }
 
-pub type ChildStdin = Fd<process::ChildStdin>;
-pub type ChildStdout = Fd<process::ChildStdout>;
-pub type ChildStderr = Fd<process::ChildStderr>;
+pub type Stdin = Fd<process::ChildStdin>;
+pub type Stdout = Fd<process::ChildStdout>;
+pub type Stderr = Fd<process::ChildStderr>;
 
 pub fn new_child(mut child: process::Child) -> io::Result<Child> {
-    let stdin = make_nonblocking(child.stdin.take())?;
-    let stdout = make_nonblocking(child.stdout.take())?;
-    let stderr = make_nonblocking(child.stderr.take())?;
+    let stdin = make_nonblocking(child.stdin.take().unwrap())?;
+    let stdout = make_nonblocking(child.stdout.take().unwrap())?;
+    let stderr = make_nonblocking(child.stderr.take().unwrap())?;
     Ok(Child {
         child,
         stdin,
@@ -154,26 +154,18 @@ pub fn new_child(mut child: process::Child) -> io::Result<Child> {
     })
 }
 
-fn make_nonblocking<T>(option: Option<T>) -> io::Result<Option<Fd<T>>>
-where
-    T: AsRawFd,
-{
-    match option {
-        None => Ok(None),
-        Some(io) => {
-            // Set the fd to nonblocking before we pass it to the event loop
-            let fd = io.as_raw_fd();
-            unsafe {
-                let r = libc::fcntl(fd, libc::F_GETFL);
-                if r == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                let r = libc::fcntl(fd, libc::F_SETFL, r | libc::O_NONBLOCK);
-                if r == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            Ok(Some(Fd(io)))
+// Set the fd to nonblocking before we pass it to the event loop
+fn make_nonblocking<T: AsRawFd>(io: T) -> io::Result<Fd<T>> {
+    let fd = io.as_raw_fd();
+    unsafe {
+        let r = libc::fcntl(fd, libc::F_GETFL);
+        if r == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let r = libc::fcntl(fd, libc::F_SETFL, r | libc::O_NONBLOCK);
+        if r == -1 {
+            return Err(io::Error::last_os_error());
         }
     }
+    Ok(Fd(io))
 }
