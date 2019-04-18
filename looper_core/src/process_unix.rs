@@ -25,7 +25,7 @@ pub fn new_core() -> Core {
         },
     };
     core.register_reader(&signals, core.next_id(), reap_all);
-    core.add(Box::new(signals));
+    core.add(signals);
     core
 }
 

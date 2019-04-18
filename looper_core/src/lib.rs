@@ -80,8 +80,8 @@ impl Core {
         self.objects.next_index()
     }
 
-    pub fn add(&mut self, object: Box<Any>) -> ObjectId {
-        self.objects.put(Some(object))
+    pub fn add(&mut self, object: impl Any) -> ObjectId {
+        self.objects.put(Some(Box::new(object)))
     }
 
     pub fn remove(&mut self, object_id: ObjectId) -> Option<Box<Any>> {

@@ -51,9 +51,9 @@ fn main() {
         .expect("route executable must exist.");
     let id = core.next_id();
     core.register_reaper(&route, id, Sequence::handle_route_death);
-    core.add(Box::new(Sequence {
+    core.add(Sequence {
         state: State::WaitingForRoutes(route),
         id,
-    }));
+    });
     core.run();
 }

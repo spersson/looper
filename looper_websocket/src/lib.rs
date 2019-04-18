@@ -40,13 +40,12 @@ where
         let tcp_listener = TcpListener::bind(&socket_address)?;
         let object_id = core.next_id();
         core.register_reader(&tcp_listener, object_id, WebSocketServer::<F>::read_all);
-        let server = WebSocketServer {
+        core.add(WebSocketServer {
             tcp_listener,
             factory,
             object_id,
             sockets: Vec::new(),
-        };
-        core.add(Box::new(server));
+        });
         Ok(object_id)
     }
 
@@ -98,11 +97,11 @@ where
                 WebSocket::<W>::read_all,
                 WebSocket::<W>::write_all,
             );
-            core.add(Box::new(WebSocket {
+            core.add(WebSocket {
                 inner_socket,
                 handler,
                 object_id,
-            }));
+            });
             self.sockets.push(object_id);
         }
     }
