@@ -1,10 +1,5 @@
-extern crate looper_core;
-#[macro_use]
-extern crate log;
-extern crate mio;
-extern crate tungstenite;
-
-use looper_core::{Core, ObjectId};
+use log::{debug, error, info, warn};
+use looper::{Core, ObjectId};
 use mio::net::{TcpListener, TcpStream};
 use std::io::{ErrorKind, Result};
 use std::net::SocketAddr;

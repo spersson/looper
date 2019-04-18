@@ -1,5 +1,5 @@
 [package]
-name = "looper_core"
+name = "looper"
 version = "0.1.0"
 authors = ["Simon Persson <simon.persson@mykolab.com>"]
 license = "MIT/Apache-2.0"

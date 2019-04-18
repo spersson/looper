@@ -2,9 +2,10 @@
 name = "looper_websocket"
 version = "0.1.0"
 authors = ["Simon Persson <simon.persson@mykolab.com>"]
+edition = "2018"
 
 [dependencies]
-log = "*"
-mio = "*"
-tungstenite = "*"
-looper_core = { path = "../looper_core" }
+log = "0.4"
+mio = "0.6"
+tungstenite = "0.6"
+looper = { path = "../looper" }

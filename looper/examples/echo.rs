@@ -1,4 +1,4 @@
-use looper_core::{Child, Core, ObjectId};
+use looper::{Child, Core, ObjectId};
 use std::io::Read;
 use std::process::Command;
 

@@ -1,7 +1,4 @@
-extern crate looper_core;
-extern crate looper_websocket;
-
-use looper_core::Core;
+use looper::Core;
 use looper_websocket::{WebSocketHandler, WebSocketServer};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
