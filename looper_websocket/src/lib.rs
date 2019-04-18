@@ -36,7 +36,7 @@ where
     W: 'static + WebSocketHandler,
     F: 'static + Fn() -> W,
 {
-    pub fn new(socket_address: SocketAddr, factory: F, core: &mut Core) -> Result<ObjectId> {
+    pub fn start(socket_address: SocketAddr, factory: F, core: &mut Core) -> Result<ObjectId> {
         let tcp_listener = TcpListener::bind(&socket_address)?;
         let object_id = core.next_id();
         core.register_reader(&tcp_listener, object_id, WebSocketServer::<F>::read_all);

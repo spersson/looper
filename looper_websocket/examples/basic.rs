@@ -22,7 +22,7 @@ fn main() {
     let web_socket_address =
         SocketAddr::from(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 17771));
 
-    let _server_id = WebSocketServer::new(web_socket_address, || Client, &mut core)
+    let _server_id = WebSocketServer::start(web_socket_address, || Client, &mut core)
         .expect("Port 17771 expected to be available.");
 
     core.run();

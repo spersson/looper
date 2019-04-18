@@ -65,6 +65,12 @@ pub struct Core {
     process_handler: proc_imp::ProcessHandler,
 }
 
+impl Default for Core {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Core {
     pub fn new() -> Core {
         proc_imp::new_core()
