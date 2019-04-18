@@ -62,18 +62,12 @@ pub struct Core {
     objects: Stash<Option<Box<Any>>, ObjectId>,
     poll: Poll,
     exit: bool,
+    process_handler: proc_imp::ProcessHandler,
 }
 
 impl Core {
     pub fn new() -> Core {
-        let mut core = Core {
-            io_handlers: Stash::default(),
-            objects: Stash::default(),
-            poll: Poll::new().unwrap(),
-            exit: false,
-        };
-        proc_imp::init_hook(&mut core);
-        core
+        proc_imp::new_core()
     }
 
     pub fn next_id(&self) -> ObjectId {

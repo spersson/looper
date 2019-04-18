@@ -1,32 +1,59 @@
-use looper_core::{Child, Core};
-use std::io::{self, Read};
+use looper_core::{Child, Core, ObjectId};
+use std::io::Read;
 use std::process::Command;
 
-struct State {
-    child: Child,
+// Tests running commands in sequence.
+// First run the "route" command and capture it's output. Then run echo after route has terminated.
+
+struct Sequence {
+    id: ObjectId,
+    state: State,
 }
 
-impl State {
-    fn handle_death(&mut self, core: &mut Core) {
-        eprintln!("I smell death.");
-        core.exit();
+enum State {
+    WaitingForRoutes(Child),
+    WaitingForEcho(Child),
+    Terminating,
+}
+
+impl Sequence {
+    fn handle_route_death(&mut self, core: &mut Core) {
+        if let State::WaitingForRoutes(ref mut r) = self.state {
+            let mut s = String::new();
+            r.stdout.read_to_string(&mut s).unwrap();
+            let echo = core
+                .spawn(Command::new("echo").arg(s))
+                .expect("echo executable must exist.");
+            core.register_reaper(&echo, self.id, Sequence::handle_echo_death);
+            self.state = State::WaitingForEcho(echo);
+        } else {
+            unreachable!()
+        }
     }
 
-    fn read_stdout(&mut self, _core: &mut Core) {
-        eprintln!("about to read.");
-        let mut buffer = String::new();
-        self.child.stdout.read_to_string(&mut buffer).unwrap();
-        dbg!(buffer);
+    fn handle_echo_death(&mut self, core: &mut Core) {
+        if let State::WaitingForEcho(ref mut e) = self.state {
+            let mut s = String::new();
+            e.stdout.read_to_string(&mut s).unwrap();
+            eprintln!("Got echo output: {}", s);
+            self.state = State::Terminating;
+            core.exit();
+        } else {
+            unreachable!()
+        }
     }
 }
 
-fn main() -> io::Result<()> {
+fn main() {
     let mut core = Core::new();
-    let child = Child::new(Command::new("echo").arg("Hello there."))?;
+    let route = core
+        .spawn(Command::new("route"))
+        .expect("route executable must exist.");
     let id = core.next_id();
-    core.register_reader(&child.stdout, id, State::read_stdout);
-    core.register_reaper(&child, id, State::handle_death);
-    core.add(Box::new(State { child }));
+    core.register_reaper(&route, id, Sequence::handle_route_death);
+    core.add(Box::new(Sequence {
+        state: State::WaitingForRoutes(route),
+        id,
+    }));
     core.run();
-    Ok(())
 }

@@ -3,21 +3,30 @@ use libc;
 use log::error;
 use mio::{
     unix::{EventedFd, UnixReady},
-    Evented, PollOpt, Ready, Token,
+    Evented, Poll, PollOpt, Ready, Token,
 };
 use signal_hook::iterator::Signals;
+use stash::Stash;
 use std::any::Any;
+use std::collections::VecDeque;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::process;
 
-pub fn init_hook(core: &mut Core) {
+pub fn new_core() -> Core {
     let signals = Signals::new(&[signal_hook::SIGCHLD]).unwrap();
+    let mut core = Core {
+        io_handlers: Stash::default(),
+        objects: Stash::default(),
+        poll: Poll::new().unwrap(),
+        exit: false,
+        process_handler: ProcessHandler {
+            reapers: VecDeque::new(),
+        },
+    };
     core.register_reader(&signals, core.next_id(), reap_all);
-    core.add(Box::new(ProcessHandler {
-        signals,
-        reapers: Vec::new(),
-    }));
+    core.add(Box::new(signals));
+    core
 }
 
 pub fn register_reaper<F, T>(core: &mut Core, child: &Child, object_id: ObjectId, f: F)
@@ -25,8 +34,7 @@ where
     F: 'static + Fn(&mut T, &mut Core),
     T: Any,
 {
-    let process_handler: &mut ProcessHandler = core.get_mut(ObjectId::from(0)).unwrap();
-    process_handler.reapers.push(Reaper {
+    core.process_handler.reapers.push_back(Reaper {
         pid: child.child.id() as libc::pid_t,
         object_id,
         callback: Box::new(Callback::new(f)),
@@ -39,28 +47,23 @@ struct Reaper {
     callback: Box<Call>,
 }
 
-struct ProcessHandler {
-    signals: Signals,
-    reapers: Vec<Reaper>,
+pub struct ProcessHandler {
+    reapers: VecDeque<Reaper>,
 }
 
-fn reap_all(p: &mut ProcessHandler, core: &mut Core) {
+fn reap_all(signals: &mut Signals, core: &mut Core) {
     // drain all pending signals, but we don't need to check which signal we got.
-    for _ in p.signals.pending() {}
-    let mut i = 0;
-    while i < p.reapers.len() {
-        match reap(p.reapers[i].pid) {
-            Ok(false) => i += 1,
+    for _ in signals.pending() {}
+    let mut i = core.process_handler.reapers.len();
+    while i > 0 {
+        i -= 1;
+        let r = core.process_handler.reapers.pop_front().unwrap();
+        match reap(r.pid) {
+            Ok(false) => core.process_handler.reapers.push_back(r),
             Ok(true) => {
-                core.call_on_object(p.reapers[i].object_id, |obj, c| {
-                    p.reapers[i].callback.make_call(obj, c)
-                });
-                p.reapers.swap_remove(i);
+                core.call_on_object(r.object_id, |obj, c| r.callback.make_call(obj, c));
             }
-            Err(e) => {
-                error!("Failed to check if process has exited: {}", e);
-                p.reapers.swap_remove(i);
-            }
+            Err(e) => error!("Failed to check if process has exited: {}", e),
         }
     }
 }
