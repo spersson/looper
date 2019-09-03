@@ -245,6 +245,10 @@ impl Core {
 #[cfg(unix)]
 mod proc_imp;
 
+#[path = "process_win.rs"]
+#[cfg(windows)]
+mod proc_imp;
+
 pub use proc_imp::{Stderr, Stdin, Stdout};
 
 pub struct Child {

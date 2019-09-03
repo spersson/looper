@@ -54,9 +54,7 @@ pub struct ProcessHandler {
 fn reap_all(signals: &mut Signals, core: &mut Core) {
     // drain all pending signals, but we don't need to check which signal we got.
     for _ in signals.pending() {}
-    let mut i = core.process_handler.reapers.len();
-    while i > 0 {
-        i -= 1;
+    for _ in 0..core.process_handler.reapers.len() {
         let r = core.process_handler.reapers.pop_front().unwrap();
         match reap(r.pid) {
             Ok(false) => core.process_handler.reapers.push_back(r),
