@@ -44,7 +44,6 @@ impl Sentinel {
 }
 
 unsafe extern "system" fn callback(ptr: PVOID, _timer_fired: BOOLEAN) {
-    eprintln!("callback called");
     let sentinel = &mut *(ptr as *mut Sentinel);
     sentinel.send();
 }
