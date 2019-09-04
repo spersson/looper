@@ -84,7 +84,7 @@ fn reap(receiver: &mut Receiver<u32>, core: &mut Core) {
     }
 }
 
-pub fn register_reaper<F, T>(core: &mut Core, child: &Child, object_id: ObjectId, f: F)
+pub fn register_reaper<F, T, S>(core: &mut Core, child: &Child<S>, object_id: ObjectId, f: F)
 where
     F: 'static + Fn(&mut T, &mut Core),
     T: Any,
@@ -138,7 +138,7 @@ pub type Stdin = NamedPipe;
 pub type Stdout = NamedPipe;
 pub type Stderr = NamedPipe;
 
-pub fn new_child(mut child: process::Child) -> io::Result<Child> {
+pub fn new_child(mut child: process::Child) -> io::Result<Child<Stdin>> {
     let stdin = stdio(child.stdin.take().unwrap());
     let stdout = stdio(child.stdout.take().unwrap());
     let stderr = stdio(child.stderr.take().unwrap());

@@ -144,7 +144,7 @@ impl Core {
         );
     }
 
-    pub fn register_reaper<F, T>(&mut self, child: &Child, object_id: ObjectId, f: F)
+    pub fn register_reaper<F, T, S>(&mut self, child: &Child<S>, object_id: ObjectId, f: F)
     where
         F: 'static + Fn(&mut T, &mut Core),
         T: Any,
@@ -195,7 +195,7 @@ impl Core {
     /// Starts running the given command.
     ///
     /// All three of stdin, stdout and stderr will be piped to/from this process.
-    pub fn spawn<C: BorrowMut<Command>>(&self, mut cmd: C) -> io::Result<Child> {
+    pub fn spawn<C: BorrowMut<Command>>(&self, mut cmd: C) -> io::Result<Child<Stdin>> {
         // this is a method on core which takes a self parameter just to ensure that
         // a Core instance has been created first, needed for unix imp to register
         // a signal handler.
@@ -214,13 +214,10 @@ impl Core {
             f(box_object.borrow_mut(), self);
             if let Some(option) = self.objects.get_mut(object_id) {
                 *option = Some(box_object);
-                true
-            } else {
-                false
+                return true;
             }
-        } else {
-            false
         }
+        false
     }
 
     fn internal_register(
@@ -251,14 +248,14 @@ mod proc_imp;
 
 pub use proc_imp::{Stderr, Stdin, Stdout};
 
-pub struct Child {
+pub struct Child<S> {
     child: ProcessChild,
-    pub stdin: Stdin,
+    pub stdin: S,
     pub stdout: Stdout,
     pub stderr: Stderr,
 }
 
-impl Child {
+impl<S> Child<S> {
     /// Returns the OS-assigned process identifier associated with this child.
     pub fn id(&self) -> u32 {
         self.child.id()
@@ -271,3 +268,15 @@ impl Child {
         self.child.kill()
     }
 }
+
+impl Child<Stdin> {
+    pub fn close_stdin(self) -> Child<()> {
+        Child {
+            child: self.child,
+            stdin: (),
+            stdout: self.stdout,
+            stderr: self.stderr,
+        }
+    }
+}
+

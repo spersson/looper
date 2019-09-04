@@ -29,7 +29,7 @@ pub fn new_core() -> Core {
     core
 }
 
-pub fn register_reaper<F, T>(core: &mut Core, child: &Child, object_id: ObjectId, f: F)
+pub fn register_reaper<F, T, S>(core: &mut Core, child: &Child<S>, object_id: ObjectId, f: F)
 where
     F: 'static + Fn(&mut T, &mut Core),
     T: Any,
@@ -143,7 +143,7 @@ pub type Stdin = Fd<process::ChildStdin>;
 pub type Stdout = Fd<process::ChildStdout>;
 pub type Stderr = Fd<process::ChildStderr>;
 
-pub fn new_child(mut child: process::Child) -> io::Result<Child> {
+pub fn new_child(mut child: process::Child) -> io::Result<Child<Stdin>> {
     let stdin = make_nonblocking(child.stdin.take().unwrap())?;
     let stdout = make_nonblocking(child.stdout.take().unwrap())?;
     let stderr = make_nonblocking(child.stderr.take().unwrap())?;
