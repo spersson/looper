@@ -2,7 +2,7 @@ use log::trace;
 use mio::{Evented, Events as MioEvents, Poll, PollOpt, Ready, Token};
 use stash::Stash;
 use std::any::Any;
-use std::borrow::BorrowMut;
+use std::borrow::{Borrow, BorrowMut};
 use std::io;
 use std::marker::PhantomData;
 use std::process::{Child as ProcessChild, Command, Stdio};
@@ -86,6 +86,14 @@ impl Core {
 
     pub fn remove(&mut self, object_id: ObjectId) -> Option<Box<Any>> {
         self.objects.take(object_id).unwrap_or(None)
+    }
+
+    pub fn get<T: Any>(&self, object_id: ObjectId) -> Option<&T> {
+        self.objects
+            .get(object_id)
+            .and_then(Option::as_ref)
+            .map(Borrow::borrow)
+            .and_then(Any::downcast_ref)
     }
 
     pub fn get_mut<T: Any>(&mut self, object_id: ObjectId) -> Option<&mut T> {
