@@ -73,7 +73,7 @@ pub struct ProcessHandler {
 fn reap(receiver: &mut Receiver<u32>, core: &mut Core) {
     while let Ok(id) = receiver.try_recv() {
         for _ in 0..core.process_handler.reapers.len() {
-            let r = core.process_handler.reapers.pop_front().unwrap();
+            let mut r = core.process_handler.reapers.pop_front().unwrap();
             if r.sentinel.id == id {
                 core.call_on_object(r.object_id, |obj, c| r.callback.make_call(obj, c));
             } else {
@@ -85,7 +85,7 @@ fn reap(receiver: &mut Receiver<u32>, core: &mut Core) {
 
 pub fn register_reaper<F, T, S>(core: &mut Core, child: &Child<S>, object_id: ObjectId, f: F)
 where
-    F: 'static + Fn(&mut T, &mut Core),
+    F: 'static + FnMut(&mut T, &mut Core),
     T: Any,
 {
     let res = unsafe { WaitForSingleObject(child.child.as_raw_handle(), 0) };

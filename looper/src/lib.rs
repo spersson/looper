@@ -22,7 +22,7 @@ impl Into<usize> for ObjectId {
 }
 
 trait Call {
-    fn make_call(&self, _: &mut Any, _: &mut Core);
+    fn make_call(&mut self, _: &mut Any, _: &mut Core);
 }
 
 struct IoHandler {
@@ -47,10 +47,10 @@ impl<F, T> Callback<F, T> {
 
 impl<F, T> Call for Callback<F, T>
 where
-    F: Fn(&mut T, &mut Core),
+    F: FnMut(&mut T, &mut Core),
     T: Any,
 {
-    fn make_call(&self, object: &mut Any, core: &mut Core) {
+    fn make_call(&mut self, object: &mut Any, core: &mut Core) {
         if let Some(t) = object.downcast_mut() {
             (self.f)(t, core);
         }
@@ -106,7 +106,7 @@ impl Core {
 
     pub fn register_reader<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
-        F: 'static + Fn(&mut T, &mut Core),
+        F: 'static + FnMut(&mut T, &mut Core),
         T: Any,
     {
         self.internal_register(
@@ -120,7 +120,7 @@ impl Core {
 
     pub fn register_writer<F, T>(&mut self, evented: &Evented, object_id: ObjectId, f: F)
     where
-        F: 'static + Fn(&mut T, &mut Core),
+        F: 'static + FnMut(&mut T, &mut Core),
         T: Any,
     {
         self.internal_register(
@@ -139,8 +139,8 @@ impl Core {
         f_read: FR,
         f_write: FW,
     ) where
-        FR: 'static + Fn(&mut T, &mut Core),
-        FW: 'static + Fn(&mut T, &mut Core),
+        FR: 'static + FnMut(&mut T, &mut Core),
+        FW: 'static + FnMut(&mut T, &mut Core),
         T: Any,
     {
         self.internal_register(
@@ -154,7 +154,7 @@ impl Core {
 
     pub fn register_reaper<F, T, S>(&mut self, child: &Child<S>, object_id: ObjectId, f: F)
     where
-        F: 'static + Fn(&mut T, &mut Core),
+        F: 'static + FnMut(&mut T, &mut Core),
         T: Any,
     {
         proc_imp::register_reaper(self, child, object_id, f);
@@ -170,17 +170,17 @@ impl Core {
             self.poll.poll(&mut mio_events, None).unwrap();
             for event in &mio_events {
                 let token = event.token();
-                let io_handler = match self.io_handlers.get_mut(token).and_then(Option::take) {
+                let mut io_handler = match self.io_handlers.get_mut(token).and_then(Option::take) {
                     Some(handler) => handler,
                     None => continue,
                 };
                 let obj_exists = self.call_on_object(io_handler.object_id, |object, core| {
-                    if let Some(read_fn) = &io_handler.read_fn {
+                    if let Some(read_fn) = &mut io_handler.read_fn {
                         if event.readiness().is_readable() {
                             read_fn.make_call(object, core);
                         }
                     }
-                    if let Some(write_fn) = &io_handler.write_fn {
+                    if let Some(write_fn) = &mut io_handler.write_fn {
                         if event.readiness().is_writable() {
                             write_fn.make_call(object, core);
                         }
@@ -203,7 +203,7 @@ impl Core {
     /// Starts running the given command.
     ///
     /// All three of stdin, stdout and stderr will be piped to/from this process.
-    pub fn spawn<C: BorrowMut<Command>>(&self, mut cmd: C) -> io::Result<Child<Stdin>> {
+    pub fn spawn(&self, mut cmd: impl BorrowMut<Command>) -> io::Result<Child<Stdin>> {
         // this is a method on core which takes a self parameter just to ensure that
         // a Core instance has been created first, needed for unix imp to register
         // a signal handler.
@@ -214,10 +214,7 @@ impl Core {
         proc_imp::new_child(cmd.spawn()?)
     }
 
-    fn call_on_object<F>(&mut self, object_id: ObjectId, f: F) -> bool
-    where
-        F: Fn(&mut Any, &mut Core),
-    {
+    fn call_on_object(&mut self, object_id: ObjectId, f: impl FnOnce(&mut Any, &mut Core)) -> bool {
         if let Some(mut box_object) = self.objects.get_mut(object_id).and_then(Option::take) {
             f(box_object.borrow_mut(), self);
             if let Some(option) = self.objects.get_mut(object_id) {
@@ -287,4 +284,3 @@ impl Child<Stdin> {
         }
     }
 }
-

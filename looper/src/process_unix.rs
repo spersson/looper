@@ -31,7 +31,7 @@ pub fn new_core() -> Core {
 
 pub fn register_reaper<F, T, S>(core: &mut Core, child: &Child<S>, object_id: ObjectId, f: F)
 where
-    F: 'static + Fn(&mut T, &mut Core),
+    F: 'static + FnMut(&mut T, &mut Core),
     T: Any,
 {
     core.process_handler.reapers.push_back(Reaper {
@@ -55,7 +55,7 @@ fn reap_all(signals: &mut Signals, core: &mut Core) {
     // drain all pending signals, but we don't need to check which signal we got.
     for _ in signals.pending() {}
     for _ in 0..core.process_handler.reapers.len() {
-        let r = core.process_handler.reapers.pop_front().unwrap();
+        let mut r = core.process_handler.reapers.pop_front().unwrap();
         match reap(r.pid) {
             Ok(false) => core.process_handler.reapers.push_back(r),
             Ok(true) => {
@@ -156,7 +156,7 @@ pub fn new_child(mut child: process::Child) -> io::Result<Child<Stdin>> {
 }
 
 // Set the fd to nonblocking before we pass it to the event loop
-fn make_nonblocking<T: AsRawFd>(io: T) -> io::Result<Fd<T>> {
+fn make_nonblocking(io: impl AsRawFd) -> io::Result<Fd<T>> {
     let fd = io.as_raw_fd();
     unsafe {
         let r = libc::fcntl(fd, libc::F_GETFL);
