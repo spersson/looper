@@ -156,7 +156,7 @@ pub fn new_child(mut child: process::Child) -> io::Result<Child<Stdin>> {
 }
 
 // Set the fd to nonblocking before we pass it to the event loop
-fn make_nonblocking(io: impl AsRawFd) -> io::Result<Fd<T>> {
+fn make_nonblocking<T: AsRawFd>(io: T) -> io::Result<Fd<T>> {
     let fd = io.as_raw_fd();
     unsafe {
         let r = libc::fcntl(fd, libc::F_GETFL);
